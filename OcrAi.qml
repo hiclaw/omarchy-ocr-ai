@@ -82,12 +82,15 @@ Item {
   // ── 样式 ────────────────────────────────────────────────────
   readonly property int cardWidth: 420
   readonly property int cardRadius: 8
-  readonly property int screenMargin: 16
   readonly property int pillHeight: 30
   readonly property int footerHeight: 44
   readonly property int bodyPadTop: 14
   readonly property int bodyPadBottom: 14
   readonly property int bodyPadX: 18
+
+  // 卡片离屏幕边缘的呼吸距离；贴着栏的那条边再让开栏本身，另加一道缝隙。
+  readonly property int screenMargin: 16
+  readonly property int barGap: 8
 
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
@@ -101,27 +104,50 @@ Item {
   readonly property bool anchorTop: root.position.indexOf("top") === 0
   readonly property bool anchorLeft: root.position.indexOf("left") >= 0
 
-  // 栏所在的那条边要额外让开，否则卡片会压住栏上的状态图标。
-  // 位置从宿主给的 barConfig 快照读，读不到就按 Omarchy 默认的顶部栏处理。
+  // 卡片压在栏上会挡住状态图标，所以贴栏的那条边要整段让开栏本身，
+  // 再留一道缝隙——这样卡片看起来是「挂」在栏下面，而不是浮在半空。
+  // 栏的粗细是按方向取的，位置则从宿主给的 barConfig 快照读，
+  // 读不到就按 Omarchy 默认的顶部栏处理。
   readonly property string barPosition: root.shell && root.shell.barConfig
     ? String(root.shell.barConfig.position || "top") : "top"
-  readonly property bool cardSharesBarEdge: root.barPosition === (root.anchorTop ? "top" : "bottom")
-  readonly property int barInset: root.cardSharesBarEdge ? Style.bar.sizeHorizontal + 6 : 0
-  readonly property int verticalMargin: root.screenMargin + root.barInset
+  readonly property bool barIsHorizontal: root.barPosition === "top" || root.barPosition === "bottom"
+  readonly property bool cardSharesBarEdge: root.barIsHorizontal
+    ? root.barPosition === (root.anchorTop ? "top" : "bottom")
+    : root.barPosition === (root.anchorLeft ? "left" : "right")
+  readonly property int barClearance: (root.barIsHorizontal ? Style.bar.sizeHorizontal
+                                                            : Style.bar.sizeVertical)
+    + root.barGap
 
+  // 卡片贴着自己所锚的那条边的距离：贴栏就是栏厚 + 缝隙，否则只是普通边距。
+  // 另一侧永远只留普通边距。
+  readonly property int verticalMargin: root.barIsHorizontal && root.cardSharesBarEdge
+    ? root.barClearance : root.screenMargin
+  readonly property int horizontalMargin: !root.barIsHorizontal && root.cardSharesBarEdge
+    ? root.barClearance : root.screenMargin
+
+  // 高度按卡片实际所在的那块屏幕算（多屏时 Qt.application.screens[0] 未必是它）。
   readonly property int screenHeight: {
-    var scr = Qt.application.screens
-    return (scr && scr.length > 0) ? scr[0].height : 1080
+    var scr = panel.screen ? panel.screen
+      : (Qt.application.screens.length > 0 ? Qt.application.screens[0] : null)
+    return scr ? scr.height : 1080
   }
 
   // ── 卡片高度：贴合内容，但不越过屏幕 ─────────────────────────
-  readonly property int stripHeight: root.sourceText === "" ? 0 : stripLabel.implicitHeight + 20
-  readonly property int maxCardHeight: Math.max(root.screenHeight - root.screenMargin * 2, 160)
+  // 用 paintedHeight 而不是 implicitHeight：在 maximumLineCount + elide + lineHeight
+  // 的组合下，implicitHeight 未必等于真正画出来的高度，结果是原文条的第二行
+  // 被裁掉半个字。paintedHeight 是实际绘制高度，跟着它走就不会露馅。
+  readonly property int stripHeight: root.sourceText === "" ? 0
+    : Math.ceil(stripLabel.paintedHeight) + 20
+  // 可用高度是屏幕高减去两头的留白：卡片本身的位置占用 verticalMargin，
+  // 对面还要留一道 screenMargin。只扣 screenMargin*2 的话，长内容会把
+  // 底部的页脚（复制/最小化/关闭）顶出屏幕外。
+  readonly property int maxCardHeight:
+    Math.max(root.screenHeight - root.verticalMargin - root.screenMargin, 160)
   readonly property int idealCardHeight:
     root.stripHeight + bodyLabel.implicitHeight + root.bodyPadTop + root.bodyPadBottom + root.footerHeight
   readonly property int cardHeight: Math.max(Math.min(root.idealCardHeight, root.maxCardHeight), 150)
   readonly property int panelHeight: (root.minimized ? root.pillHeight : root.cardHeight)
-    + root.screenMargin * 2 + root.barInset
+    + root.verticalMargin + root.screenMargin
 
   // ── 配置加载 ────────────────────────────────────────────────
   // 两份文件谁先读到不一定，所以各自暂存、读完再合并，用户配置总是压在上面。
@@ -494,7 +520,7 @@ Item {
       left: root.anchorLeft
       right: !root.anchorLeft
     }
-    implicitWidth: root.cardWidth + root.screenMargin * 2
+    implicitWidth: root.cardWidth + root.horizontalMargin + root.screenMargin
     implicitHeight: root.panelHeight
 
     FocusScope {
@@ -535,8 +561,8 @@ Item {
           right: root.anchorLeft ? undefined : parent.right
           topMargin: root.anchorTop ? root.verticalMargin : 0
           bottomMargin: root.anchorTop ? 0 : root.verticalMargin
-          leftMargin: root.anchorLeft ? root.screenMargin : 0
-          rightMargin: root.anchorLeft ? 0 : root.screenMargin
+          leftMargin: root.anchorLeft ? root.horizontalMargin : 0
+          rightMargin: root.anchorLeft ? 0 : root.horizontalMargin
         }
 
         opacity: root.minimized ? 1.0 : 0.0
@@ -597,8 +623,8 @@ Item {
           right: root.anchorLeft ? undefined : parent.right
           topMargin: root.anchorTop ? root.verticalMargin : 0
           bottomMargin: root.anchorTop ? 0 : root.verticalMargin
-          leftMargin: root.anchorLeft ? root.screenMargin : 0
-          rightMargin: root.anchorLeft ? 0 : root.screenMargin
+          leftMargin: root.anchorLeft ? root.horizontalMargin : 0
+          rightMargin: root.anchorLeft ? 0 : root.horizontalMargin
         }
 
         opacity: root.minimized ? 0.0 : 1.0
@@ -658,6 +684,12 @@ Item {
           Connections {
             target: root
             function onAnswerChanged() {
+              // 「原文」是静态阅读：永远从文首看起。
+              // 只有 AI 流式输出才需要一直跟着底部走。
+              if (!root.currentActionUsesAi) {
+                flickable.contentY = 0
+                return
+              }
               if (flickable.autoScroll)
                 flickable.contentY = Math.max(0, flickable.contentHeight - flickable.height)
             }

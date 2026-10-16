@@ -18,8 +18,10 @@ SUPER + SHIFT + O   →  drag a region  →  the answer streams into a corner ca
    always check what the AI actually read.
 
 Nothing is shown while you drag — no window, no focus change, no overlay to
-catch the screenshot. Cancel the drag (or select something with no text) and
-the plugin exits silently, with no error and no trace.
+catch the screenshot. Cancel the drag and the plugin exits silently, with no
+error and no trace. If you do select a region but there is no text in it, the
+card says so in one muted line instead of vanishing: "nothing happened" and
+"something is broken" should not look the same.
 
 ## Requirements
 
@@ -113,10 +115,20 @@ stdin — `bai`, a local model, a shell one-liner:
 shortcut → summon claw.ocr-ai
               │
               ├─ scripts/capture-ocr.sh   hyprpicker freeze → slurp → grim → tesseract
-              │                                        stdout: the text (empty = cancel)
+              │                                        stdout: the text
+              │                                        exit code: how it ended
               │
               └─ ai_command (stdin = text)  ──────────→  stdout streams into the card
 ```
+
+The script reports *how* it ended, so the card can tell three cases apart:
+
+| Exit | Meaning | What you see |
+|---|---|---|
+| `0` with output | text recognized | the card |
+| `0` with no output | you cancelled the drag | nothing at all |
+| `3` | region selected, no text in it | one muted line |
+| `1` | it actually failed (missing tool, capture or OCR error) | the reason, in the card |
 
 The script is a pure "region → text" function: it never writes the clipboard,
 never notifies, and touches nothing global. Presentation and follow-up are the
@@ -132,9 +144,18 @@ printf 'text to translate' | ~/tools/bai -P river -p fanyi
 
 ## Notes
 
+- The card stays out of the way on purpose. Its layer-shell input region is the
+  card itself, so the transparent padding around it (and the space beside the
+  pill when it is collapsed) passes clicks straight through to whatever is
+  behind it — and it never takes keyboard focus from the window you were using.
+  That is also why the number keys work after you click the card, not before.
+- The card hangs a fixed gap below (or above) the bar — bar thickness plus 8px,
+  both read from the live theme and bar position — and is capped so long answers
+  scroll inside the card instead of growing past the bottom of the screen. The
+  footer with the action chips stays visible at every height.
+- Pressing the shortcut again while a selection is already open throws that
+  selection away and starts a fresh one. Nothing can get stuck invisibly in the
+  way: if a capture ever ends up in a bad state, the next press clears it.
 - `bai` records the profile it was invoked with as its "last profile". Because
   this plugin always passes `-P` explicitly, doing a lookup here also sets
   `last_profile`. Use `-s <file>` or a different `ai_command` if that matters.
-- The capture script treats a second shortcut press during a drag as a no-op,
-  so you cannot cancel a selection that way — press `Esc`, as with any slurp
-  selection.
