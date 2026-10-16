@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 #
-# claw.ocr-ai — 选定屏幕区域，识别其中的文字。
+# claw.ocr-ai — select a region of the screen and read the text in it.
 #
-# 用法:
+# Usage:
 #   capture-ocr.sh [LANGS]
 #
-# 退出码（调用方靠它区分「没事」「没字」「出事」三种结局）:
-#   0  成功：stdout 是识别出的文本。
-#      也是「用户取消选区」——此时 0 退出且没有任何输出。
-#   3  框了区域，但图里没有可识别的文字。不是错误，但也不该完全无声。
-#   1  真失败（缺少依赖、截图或识别报错）：原因写到 stderr，必须让用户看见。
+# Exit codes (the caller uses these to tell "fine", "no text" and "broken" apart):
+#   0  success: stdout holds the recognized text.
+#      Also "the user cancelled the selection" — that exits 0 with no output.
+#   3  a region was selected, but the image holds no recognizable text. Not an
+#      error, but it should not be entirely silent either.
+#   1  a real failure (missing dependency, capture or OCR error): the reason goes
+#      to stderr, and the user has to see it.
 #
-# 环境:
-#   OCR_LANGS   tesseract 语言包，默认 eng（LANGS 参数优先）
+# Environment:
+#   OCR_LANGS   tesseract language argument, default eng (the LANGS argument wins)
 #
-# 这是一个纯粹的「屏幕区域 → 文本」函数：不写剪贴板、不弹通知、
-# 不产生任何全局副作用。对上层的展示与后续处理一律交给调用方决定。
+# This is a pure "screen region → text" function: it writes no clipboard, shows
+# no notification and produces no global side effect. Presentation and anything
+# that follows are entirely the caller's business.
 #
-# 被 TERM/INT/HUP 打断是常态：调用方收面板、重启 shell 都会这样收进程。
-# 所以这两个后台进程必须由本脚本自己拿着 pid 并在所有退出路径上收掉——
-# 留下任何一个都是灾难：hyprpicker 会把画面冻住，slurp 会握走输入却
-# 什么都不显示，之后每次框选都再也出不来。
+# Being interrupted by TERM/INT/HUP is normal: the caller does that when it
+# hides the panel or restarts the shell. So this script has to hold the pids of
+# its two background processes and reap them on every exit path. Leaving either
+# one behind is a disaster: hyprpicker freezes the display, and slurp takes the
+# input while showing nothing, so no later selection can ever come up.
 
 set -uo pipefail
 
@@ -43,47 +47,52 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-# 缺依赖时不能只是安静地什么都没发生，那样用户完全无从判断：
-# 报错到 stderr、以 1 退出，由调用方把原因显示出来。
+# A missing dependency must not just quietly do nothing — the user would have no
+# way to tell what happened. Report it on stderr and exit 1, so the caller can
+# put the reason on screen.
 for cmd in hyprpicker slurp grim tesseract; do
   command -v "$cmd" >/dev/null 2>&1 || {
-    echo "缺少依赖：$cmd（OCR 需要 hyprpicker、slurp、grim、tesseract）" >&2
+    echo "Missing dependency: $cmd (OCR needs hyprpicker, slurp, grim and tesseract)" >&2
     exit 1
   }
 done
 
-# 冻结屏幕：选区过程中画面静止，且随后 grim 截取的是这帧冻结画面，
-# 不会把浮层收起、动画收敛这类过程画面截进去（与 omarchy capture text 一致）。
+# Freeze the display: the screen stands still while you select, and grim then
+# captures that frozen frame, so transient things like an animation settling or
+# this card closing never end up in the image (same as omarchy capture text).
 hyprpicker -r -z >/dev/null 2>&1 &
 freeze_pid=$!
 sleep 0.1
 
-# slurp 放到后台跑、自己留着 pid：Esc 取消只是它非零退出，
-# 而脚本被信号打断时我们还得能主动把它收掉（见文件头）。
+# slurp runs in the background with its pid kept: Esc only makes it exit
+# non-zero, while an interrupted script still has to be able to reap it (see the
+# header).
 sel_file="$(mktemp "${TMPDIR:-/tmp}/claw-ocr-ai-sel-XXXXXX")" \
-  || { echo "无法创建临时文件（TMPDIR=${TMPDIR:-/tmp}）" >&2; exit 1; }
+  || { echo "Cannot create a temporary file (TMPDIR=${TMPDIR:-/tmp})" >&2; exit 1; }
 
 slurp >"$sel_file" 2>/dev/null &
 slurp_pid=$!
-wait "$slurp_pid" || { slurp_pid=""; exit 0; }   # Esc 取消：安静收场
+wait "$slurp_pid" || { slurp_pid=""; exit 0; }   # Esc: leave quietly
 slurp_pid=""
 
 selection="$(cat "$sel_file")"
 [ -n "$selection" ] || exit 0
 
-# 截图落盘再交给 tesseract：管道里拿不到各自的退出码，一旦失败就分不清
-# 是截图坏了还是识别坏了，只能默默什么都没发生。
+# Capture to a file and hand that to tesseract: in a pipeline the two exit codes
+# cannot be told apart, so a failure would be indistinguishable between a broken
+# capture and a broken OCR run — the only option left would be silence.
 tmp="$(mktemp "${TMPDIR:-/tmp}/claw-ocr-ai-XXXXXX.png")" \
-  || { echo "无法创建临时文件（TMPDIR=${TMPDIR:-/tmp}）" >&2; exit 1; }
+  || { echo "Cannot create a temporary file (TMPDIR=${TMPDIR:-/tmp})" >&2; exit 1; }
 
 grim -g "$selection" "$tmp" 2>/dev/null \
-  || { echo "截图失败：grim 无法捕获所选区域" >&2; exit 1; }
+  || { echo "Capture failed: grim could not grab the selected region" >&2; exit 1; }
 
 raw="$(tesseract "$tmp" stdout --oem 1 --psm 6 -l "$langs" --dpi 300 \
         -c preserve_interword_spaces=1 2>/dev/null)" \
-  || { echo "识别失败：tesseract 无法处理该图像" >&2; exit 1; }
+  || { echo "OCR failed: tesseract could not process that image" >&2; exit 1; }
 
-# 去掉每行行尾空白与开头的空行；整段都是空白视为没识别到内容。
+# Strip trailing whitespace from every line and drop leading blank lines; a run
+# that is nothing but whitespace counts as nothing recognized.
 text="$(printf '%s' "$raw" | sed -e 's/[[:space:]]*$//' -e '/./,$!d')"
 [ -n "${text//[[:space:]]/}" ] || exit 3
 

@@ -7,13 +7,14 @@ import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 
-// 截图 → OCR → AI。
+// Screenshot -> OCR -> AI.
 //
-// 一次交互只有三步：按下快捷键、框选区域、读结果。框选期间不显示任何窗口
-// （否则会被截进图里），识别成功后才升起卡片并开始流式回答；取消选区、
-// 或没识别到文字时静默收起，不弹错误、不留残影。
+// One interaction is three steps: press the shortcut, drag a region, read the
+// answer. Nothing is shown while you drag (it would end up in the capture); the
+// card rises once text is recognized. A cancelled selection slips away in
+// silence, and a region with no text says so in one muted line.
 //
-// 与宿主（omarchy-shell）的契约见此：open(payloadJson) / close() / opened。
+// The contract with the host (omarchy-shell) is documented here: open(payloadJson) / close() / opened.
 Item {
   id: root
 
@@ -22,27 +23,31 @@ Item {
   property bool opened: false
   property bool minimized: false
 
-  // ── 运行状态 ────────────────────────────────────────────────
-  // idle → capturing（等待框选与识别）→ thinking（AI 流式输出）→ done / error
+  // -- Runtime state ------------------------------------------
+  // idle -> capturing (drag and OCR) -> thinking (AI stream) -> done / error
   property string stage: "idle"
-  property string sourceText: ""     // OCR 结果，也是 AI 的输入
-  property string actionId: ""       // 当前动作 id，空则用默认动作
+  property string sourceText: ""     // OCR result, also the AI input
+  property string actionId: ""       // current action id; empty means the default one
   property string errorMessage: ""
 
-  // 一次 AI 调用的两个守卫。宿主只给一个 Process，切换动作时要先打断上一轮，
-  // 而 SIGTERM 是异步的：旧进程的 exited 可能在新一轮开始之后才到达。
-  //   aiLaunched  —— 本轮真的启动过（onStarted 置位）。旧进程被杀时尚未置位，
-  //                  因此可以据此把「上一轮的余音」和新进程的事件区分开。
-  //   awaitingFirstChunk —— 采集器里还压着上一轮的文本，首字节到达前不显示。
+  // Two guards around a single AI call. The host gives us one Process, so
+  // switching actions has to interrupt the previous run first, and SIGTERM is
+  // asynchronous: the old process's exited can arrive after the new one began.
+  //
+  //   aiLaunched          this run really started (set in onStarted). A killed
+  //                       process never set it, so its leftover events can be
+  //                       told apart from the new run's.
+  //   awaitingFirstChunk  the collector still holds the previous run's text;
+  //                       nothing is shown until the first new chunk lands.
   property bool aiLaunched: false
   property bool awaitingFirstChunk: false
 
-  // ── 配置（~/.config/omarchy/ocr-ai.json 覆盖插件自带的 config.json）──
+  // -- Config: ~/.config/omarchy/ocr-ai.json overrides the bundled config.json --
   property string position: "top-right"
   property string ocrLangs: "eng"
   property bool copyOcrToClipboard: true
   property var aiCommand: ["~/tools/bai", "-P", "river", "-p", "{pattern}"]
-  property var actions: [{ "id": "raw", "label": "原文", "hotkey": "1", "pattern": "" }]
+  property var actions: [{ "id": "raw", "label": "Original", "hotkey": "1", "pattern": "" }]
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
   readonly property string captureScript: Qt.resolvedUrl("scripts/capture-ocr.sh").toString().replace(/^file:\/\//, "")
@@ -64,7 +69,7 @@ Item {
     return !!a && String(a.pattern || "") !== ""
   }
 
-  // 回答正文：原文动作直接回显 OCR 文本，其余读 AI 的流
+  // Card body: the raw action echoes the OCR text, everything else reads the AI stream
   readonly property string answer: root.currentActionUsesAi
     ? (root.awaitingFirstChunk ? "" : aiOut.text)
     : root.sourceText
@@ -72,14 +77,14 @@ Item {
   readonly property bool waitingForFirstChunk: root.stage === "thinking" && root.awaitingFirstChunk
 
   readonly property string modelName: {
-    // 从 ai_command 里捡一个能代表这次回答的名字，纯粹用于卡片右下角的水印
+    // Pick a name for this answer out of ai_command, purely for the card's watermark
     var argv = root.aiCommand || []
     for (var i = 0; i < argv.length - 1; i++)
       if (String(argv[i]) === "-P" || String(argv[i]) === "--profile") return String(argv[i + 1])
     return argv.length > 0 ? String(argv[0]).replace(/^.*\//, "") : "AI"
   }
 
-  // ── 样式 ────────────────────────────────────────────────────
+  // -- Style --------------------------------------------------
   readonly property int cardWidth: 420
   readonly property int cardRadius: 8
   readonly property int pillHeight: 30
@@ -88,7 +93,8 @@ Item {
   readonly property int bodyPadBottom: 14
   readonly property int bodyPadX: 18
 
-  // 卡片离屏幕边缘的呼吸距离；贴着栏的那条边再让开栏本身，另加一道缝隙。
+  // Breathing room between the card and the screen edge. The edge that meets
+  // the bar clears the bar itself and then adds a thin gap.
   readonly property int screenMargin: 16
   readonly property int barGap: 8
 
@@ -104,10 +110,11 @@ Item {
   readonly property bool anchorTop: root.position.indexOf("top") === 0
   readonly property bool anchorLeft: root.position.indexOf("left") >= 0
 
-  // 卡片压在栏上会挡住状态图标，所以贴栏的那条边要整段让开栏本身，
-  // 再留一道缝隙——这样卡片看起来是「挂」在栏下面，而不是浮在半空。
-  // 栏的粗细是按方向取的，位置则从宿主给的 barConfig 快照读，
-  // 读不到就按 Omarchy 默认的顶部栏处理。
+  // A card sitting on the bar would cover its status icons, so the edge that
+  // meets the bar clears it entirely and then leaves a thin gap: the card reads
+  // as hung under the bar rather than floating. Thickness follows the bar's
+  // orientation, and position comes from the barConfig snapshot the host hands
+  // us; with no snapshot we assume Omarchy's default top bar.
   readonly property string barPosition: root.shell && root.shell.barConfig
     ? String(root.shell.barConfig.position || "top") : "top"
   readonly property bool barIsHorizontal: root.barPosition === "top" || root.barPosition === "bottom"
@@ -118,29 +125,33 @@ Item {
                                                             : Style.bar.sizeVertical)
     + root.barGap
 
-  // 卡片贴着自己所锚的那条边的距离：贴栏就是栏厚 + 缝隙，否则只是普通边距。
-  // 另一侧永远只留普通边距。
+  // Distance from the edge the card is anchored to: the bar's thickness plus a
+  // gap when it shares that edge, otherwise just the ordinary margin. The
+  // opposite side always gets the plain margin.
   readonly property int verticalMargin: root.barIsHorizontal && root.cardSharesBarEdge
     ? root.barClearance : root.screenMargin
   readonly property int horizontalMargin: !root.barIsHorizontal && root.cardSharesBarEdge
     ? root.barClearance : root.screenMargin
 
-  // 高度按卡片实际所在的那块屏幕算（多屏时 Qt.application.screens[0] 未必是它）。
+  // Height is measured on the screen the card actually lives on (on a
+  // multi-monitor setup Qt.application.screens[0] is not necessarily it).
   readonly property int screenHeight: {
     var scr = panel.screen ? panel.screen
       : (Qt.application.screens.length > 0 ? Qt.application.screens[0] : null)
     return scr ? scr.height : 1080
   }
 
-  // ── 卡片高度：贴合内容，但不越过屏幕 ─────────────────────────
-  // 用 paintedHeight 而不是 implicitHeight：在 maximumLineCount + elide + lineHeight
-  // 的组合下，implicitHeight 未必等于真正画出来的高度，结果是原文条的第二行
-  // 被裁掉半个字。paintedHeight 是实际绘制高度，跟着它走就不会露馅。
+  // -- Card height: hug the content without leaving the screen --------
+  // paintedHeight rather than implicitHeight: under maximumLineCount + elide
+  // + lineHeight, implicitHeight does not have to match what is actually
+  // painted, which clipped the OCR strip's second line in half. paintedHeight
+  // is the real painted height, so following it cannot be wrong.
   readonly property int stripHeight: root.sourceText === "" ? 0
     : Math.ceil(stripLabel.paintedHeight) + 20
-  // 可用高度是屏幕高减去两头的留白：卡片本身的位置占用 verticalMargin，
-  // 对面还要留一道 screenMargin。只扣 screenMargin*2 的话，长内容会把
-  // 底部的页脚（复制/最小化/关闭）顶出屏幕外。
+  // Available height is the screen minus the room taken on both sides: the
+  // card's own position costs verticalMargin and the opposite side keeps a
+  // screenMargin. Subtracting screenMargin*2 only let a long answer push the
+  // footer (copy / collapse / close) off the bottom edge.
   readonly property int maxCardHeight:
     Math.max(root.screenHeight - root.verticalMargin - root.screenMargin, 160)
   readonly property int idealCardHeight:
@@ -149,12 +160,14 @@ Item {
   readonly property int panelHeight: (root.minimized ? root.pillHeight : root.cardHeight)
     + root.verticalMargin + root.screenMargin
 
-  // ── 配置加载 ────────────────────────────────────────────────
-  // 两份文件谁先读到不一定，所以各自暂存、读完再合并，用户配置总是压在上面。
+  // -- Config loading -----------------------------------------
+  // Either file may load first, so each one is parked until it arrives and the
+  // two are merged then; the user's config always sits on top.
   //
-  // manifest 里刻意没有 keepLoaded：实例每次召唤都重建，配置也就每次都重读，
-  // 改完配置文件下次召唤即生效，不必重启 shell。若改成 keepLoaded: true，
-  // 实例只在 shell 启动时建一次，配置就会变成「启动时读死」，改文件不再生效。
+  // The manifest deliberately omits keepLoaded: the instance is rebuilt on
+  // every summon, so the config is re-read too and an edit applies to the next
+  // summon without a shell restart. With keepLoaded: true the instance is
+  // created once at shell start, freezing the config until the next restart.
   property var bundledConfig: null
   property var userConfig: null
 
@@ -163,7 +176,7 @@ Item {
     try {
       cfg = JSON.parse(jsonText)
     } catch (e) {
-      console.warn("claw.ocr-ai: 配置解析失败:", e)
+      console.warn("claw.ocr-ai: config parse failed:", e)
       return
     }
     if (!cfg || typeof cfg !== "object") return
@@ -208,12 +221,13 @@ Item {
     onLoaded: root.loadConfig(text(), true)
   }
 
-  // ── 宿主契约 ────────────────────────────────────────────────
+  // -- Host contract ------------------------------------------
   function open(payloadJson) {
     var payload = {}
     try { payload = JSON.parse(payloadJson || "{}") } catch (e) {}
 
-    // 允许调用方直接塞一段文本进来（跳过截图），便于别的来源复用这个卡片
+    // Callers may hand us a piece of text directly (skipping the screenshot), so
+    // other sources can reuse the same card.
     if (payload.text) {
       root.adoptText(String(payload.text), root.actionById(payload.action))
       return
@@ -236,28 +250,30 @@ Item {
       root.shell.hide("claw.ocr-ai")
   }
 
-  // 实例被拆掉时（面板收起、插件重载、shell 退出）子进程必须一起走。
-  // 留一个还在等框选的 slurp 下来是最糟的结果：它握走输入却不显示任何界面，
-  // 之后每次触发都再也框不出选区，而且看不出是谁干的。
+  // When the instance goes away (panel hidden, plugin reloaded, shell exiting)
+  // its child processes have to go with it. A slurp still waiting for a drag is
+  // the worst leftover: it holds the input while showing nothing, so no later
+  // summon can bring up a selection, and nothing points back to the cause.
   Component.onDestruction: {
     if (captureProc.running) captureProc.running = false
     if (aiProc.running) aiProc.running = false
   }
 
-  // ── 捕获 → 识别 ─────────────────────────────────────────────
+  // -- Capture -> OCR -----------------------------------------
   function beginCapture() {
-    // 上一轮选区还活着：掀掉重来。
+    // A previous selection is still alive: throw it away and start over.
     //
-    // 正常情况这是「手滑连按两下」，代价只是重新框一次；异常情况是那一轮
-    // slurp 卡住了（进程在、界面没出来，握走了输入），此时静默忽略就等于
-    // 之后每一次按键都没反应。宁可重来，也不能有按键被无声吞掉。
+    // Usually that is a double tap on the shortcut and only costs one more drag.
+    // Otherwise the previous slurp is stuck (process alive, nothing on screen,
+    // input held), and ignoring the press would mean every later press does
+    // nothing. Restarting beats a keypress swallowed in silence.
     if (captureProc.running) captureProc.running = false
 
     if (aiProc.running) aiProc.running = false
     aiIdleTimer.stop()
 
     root.stage = "capturing"
-    root.opened = false        // 框选期间不留任何窗口在屏幕上
+    root.opened = false        // keep the screen clear while the region is dragged
     root.minimized = false
     root.sourceText = ""
     root.actionId = ""
@@ -267,9 +283,9 @@ Item {
     captureProc.running = true
   }
 
-  // 只在真的识别出文字时动手。空结果要到 onCaptureExited 再判，
-  // 因为宿主是先 streamEnded(stdout) 再 streamEnded(stderr)，在这里读 stderr
-  // 拿到的还是上一轮的内容。
+  // Only act when text really came back. Empty results are judged in onCaptureExited
+  // instead: the host calls streamEnded(stdout) before streamEnded(stderr), so
+  // reading stderr here would still show the previous run.
   function onCaptured(raw) {
     if (root.stage !== "capturing") return
     var text = String(raw || "").trim()
@@ -277,12 +293,13 @@ Item {
   }
 
   function onCaptureExited(exitCode) {
-    if (root.stage !== "capturing") return   // 有文字时已经走进 AI 流程了
+    if (root.stage !== "capturing") return   // text arrived, already on the AI path
 
-    // 没拿到文字分三种，脚本用退出码区分（见 scripts/capture-ocr.sh 头部契约）：
-    //   0 + 无输出 → 用户取消了选区，安静收场，不留痕迹
-    //   3          → 框了区域、图里确实没字，轻声说一句
-    //   其它       → 真失败（缺依赖、截图/识别报错），原因必须摆到台面上
+    // Three ways to end up without text, told apart by the script's exit code
+    // (see the contract at the top of scripts/capture-ocr.sh):
+    //   0 + no output  the drag was cancelled: leave quietly, no trace
+    //   3              a region was selected but holds no text: say so softly
+    //   anything else  a real failure; the reason belongs on screen
     var err = String(captureErr.text || "").trim()
 
     if (exitCode === 0 && err === "") {
@@ -298,15 +315,16 @@ Item {
       return
     }
 
-    root.errorMessage = err !== "" ? err : "OCR 失败（退出码 " + exitCode + "）"
+    root.errorMessage = err !== "" ? err : "OCR failed (exit code " + exitCode + ")"
     root.stage = "error"
   }
 
   function adoptText(text, action) {
     root.sourceText = text
     if (root.copyOcrToClipboard) Quickshell.execDetached(["wl-copy", text])
-    // 捕获阶段到此结束。必须先离开 capturing，否则下面 runAction 的守卫
-    // （拦住拖选途中的误触）会把这次正当的首跑一起挡掉，窗口再也出不来。
+    // The capture phase ends here. Leave capturing first, or runAction's guard
+    // (which blocks stray presses mid-drag) also blocks this legitimate first
+    // run and the card never appears at all.
     root.stage = "idle"
     root.opened = true
     root.minimized = false
@@ -321,9 +339,10 @@ Item {
     return p
   }
 
-  // 文本走 stdin：既不落临时文件，也不把可能很长的识别结果塞进 argv，
-  // 而且文本永远不参与 shell 解析——它以独立的 argv 位置传入，由 sh 原样交给管道。
-  // 先自检命令是否存在，否则 shell 会吐一句带自己名字的英文报错，很难看。
+  // Text travels on stdin: no temp file, no possibly huge OCR result inside argv,
+  // and it is never parsed by a shell -- it is passed as its own argv slot and
+  // handed straight to the pipe. The command is existence-checked first, or the
+  // shell would print its own ugly "command not found" line.
   function aiArgv(action) {
     var argv = []
     var tmpl = root.aiCommand || []
@@ -335,13 +354,13 @@ Item {
     return ["sh", "-c",
       'exe=$1; text=$2; shift 2; '
         + 'command -v -- "$exe" >/dev/null 2>&1 '
-        + '|| { printf "找不到 AI 命令：%s\\n" "$exe" >&2; exit 127; }; '
+        + '|| { printf "AI command not found: %s\\n" "$exe" >&2; exit 127; }; '
         + 'printf %s "$text" | "$exe" "$@"',
       "claw.ocr-ai", argv[0], root.sourceText].concat(argv.slice(1))
   }
 
   function runAction(action) {
-    // 也接受动作 id，这样 shell IPC 可以直接驱动：
+    // Action ids are accepted too, so shell IPC can drive this directly:
     //   omarchy-shell shell call claw.ocr-ai runAction summarize
     if (typeof action === "string") action = root.actionById(action)
     if (!action || root.stage === "capturing" || root.sourceText === "") return
@@ -349,7 +368,7 @@ Item {
     root.errorMessage = ""
 
     if (!action.pattern) {
-      // 原文动作：不惊动 AI
+      // the raw action: leave the AI alone
       if (aiProc.running) aiProc.running = false
       aiIdleTimer.stop()
       root.aiLaunched = false
@@ -360,7 +379,7 @@ Item {
 
     var argv = root.aiArgv(action)
     if (argv.length === 0) {
-      root.errorMessage = "ai_command 未配置"
+      root.errorMessage = "ai_command is not configured"
       root.stage = "error"
       return
     }
@@ -369,8 +388,9 @@ Item {
     root.aiLaunched = false
     root.awaitingFirstChunk = true
 
-    // 先打断上一轮。SIGTERM 是异步的，新命令会在旧进程真正退出后才起来，
-    // 中间那段由 aiLaunched 兜住。
+    // Interrupt the previous run first. SIGTERM is asynchronous, so the new
+    // command only starts once the old process really exits; aiLaunched covers
+    // that gap.
     if (aiProc.running) aiProc.running = false
     aiProc.command = argv
     aiProc.running = true
@@ -386,7 +406,7 @@ Item {
       root.errorMessage = err
       root.stage = "error"
     } else if (exitCode !== 0) {
-      root.errorMessage = "AI 命令以代码 " + exitCode + " 退出"
+      root.errorMessage = "AI command exited with code " + exitCode
       root.stage = "error"
     } else {
       root.stage = "done"
@@ -396,8 +416,8 @@ Item {
   function onAiStalled() {
     if (root.stage !== "thinking") return
     root.errorMessage = root.awaitingFirstChunk
-      ? "AI 没有响应，检查 ai_command 是否可用"
-      : "AI 输出中断"
+      ? "The AI did not respond - check that ai_command works"
+      : "The AI output stopped"
     root.stage = "error"
     if (aiProc.running) aiProc.running = false
   }
@@ -426,11 +446,11 @@ Item {
 
     stdout: StdioCollector {
       id: aiOut
-      waitForEnd: false        // 边到边显示，才有逐字流出的感觉
+      waitForEnd: false        // show chunks as they arrive: that is what makes it feel typed
       onDataChanged: {
         if (root.awaitingFirstChunk) {
           root.awaitingFirstChunk = false
-          aiIdleTimer.interval = 30000   // 已经出字了，后面宽容一些
+          aiIdleTimer.interval = 30000   // words are flowing now, be patient
         }
         aiIdleTimer.restart()
       }
@@ -449,9 +469,10 @@ Item {
     onExited: function(exitCode) { root.onAiExited(exitCode) }
   }
 
-  // 静默看门狗：命令不存在、密钥失效、网络卡死这类失败都不会有任何输出，
-  // 进程也不会发 exited，没有它就只剩一个永远转下去的卡片。
-  // 分两段：等首字节要严一些（失败几乎都发生在这段），已经在出字了就宽容些。
+  // A silent watchdog: a missing command, an expired key, a stalled network --
+  // failures like these produce no output and no exited signal, and without it
+  // the card would spin forever. Two stages: strict while waiting for the first
+  // chunk (nearly every failure happens there), patient once words flow.
   Timer {
     id: aiIdleTimer
     interval: 12000
@@ -459,12 +480,12 @@ Item {
     onTriggered: root.onAiStalled()
   }
 
-  // ── 展示 ────────────────────────────────────────────────────
+  // -- Presentation -------------------------------------------
   readonly property string bodyText: {
     if (root.stage === "error") return root.errorMessage
-    if (root.stage === "empty") return "没识别到文字"
+    if (root.stage === "empty") return "No text found"
     if (root.stage === "thinking" && root.awaitingFirstChunk) return ""
-    if (root.answer === "") return root.stage === "thinking" ? "" : "（无内容）"
+    if (root.answer === "") return root.stage === "thinking" ? "" : "(no content)"
     return root.answer + (root.stage === "thinking" ? " ▍" : "")
   }
 
@@ -498,7 +519,7 @@ Item {
     return null
   }
 
-  // ── 浮层 ────────────────────────────────────────────────────
+  // -- Layer surface ------------------------------------------
   PanelWindow {
     id: panel
     visible: root.opened
@@ -508,12 +529,14 @@ Item {
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
     exclusionMode: ExclusionMode.Ignore
 
-    // 只有可见的卡片／胶囊本身接收鼠标事件。面板那块矩形里其余留白
-    // （边距、最小化后胶囊两侧的空白）对点击完全透明，点上去就是点后面的窗口——
-    // 浮层不该比它实际占的地方更"厚"。
+    // Only the visible card or pill takes mouse events. The rest of the panel's
+    // rectangle (the margins, the space beside the pill when collapsed) passes
+    // clicks straight through to the window behind: an overlay should never be
+    // "thicker" than what it actually shows.
     mask: Region { item: root.minimized ? pill : card }
 
-    // 只占卡片所在的那个角，不全屏铺开，因此不会挡住其他窗口的点击
+    // It covers only the corner the card lives in instead of the whole screen,
+    // so it never blocks clicks meant for other windows.
     anchors {
       top: root.anchorTop
       bottom: !root.anchorTop
@@ -544,7 +567,7 @@ Item {
         }
       }
 
-      // ── 胶囊（最小化态）：留着答案，让用户回去接着干活 ──────────
+      // -- Pill (collapsed state): the answer stays visible while you work --
       Rectangle {
         id: pill
         width: pillLabel.implicitWidth + 26 + chevron.implicitWidth + 6
@@ -606,7 +629,7 @@ Item {
         }
       }
 
-      // ── 卡片 ────────────────────────────────────────────────
+      // -- Card ---------------------------------------------------------
       BorderSurface {
         id: card
         width: root.cardWidth
@@ -633,7 +656,8 @@ Item {
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
         Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
-        // OCR 原文：短短两行，让人随时能核对「AI 到底读到了什么」
+        // The OCR source, in two short lines, so you can always check what the
+        // AI actually read.
         Item {
           id: strip
           anchors { top: parent.top; left: parent.left; right: parent.right }
@@ -663,7 +687,7 @@ Item {
           }
         }
 
-        // 回答正文
+        // The answer itself
         Flickable {
           id: flickable
           anchors {
@@ -684,8 +708,8 @@ Item {
           Connections {
             target: root
             function onAnswerChanged() {
-              // 「原文」是静态阅读：永远从文首看起。
-              // 只有 AI 流式输出才需要一直跟着底部走。
+              // The raw action is static reading: always start at the top.
+              // Following the bottom only makes sense for a streaming answer.
               if (!root.currentActionUsesAi) {
                 flickable.contentY = 0
                 return
@@ -713,7 +737,7 @@ Item {
               : (root.stage === "empty" ? root.muted : root.foreground)
           }
 
-          // 首字节到达前转起来，让「在等」这件事是看得见的
+          // Spin until the first chunk arrives, so "waiting" is something you can see
           Text {
             id: spinner
             visible: root.waitingForFirstChunk
@@ -734,7 +758,8 @@ Item {
             }
           }
 
-          // 点空白处把键盘焦点收回来，Esc / 数字键才继续有效
+          // Clicking the empty area takes keyboard focus back, so Esc and the
+          // number keys keep working.
           MouseArea {
             anchors.fill: parent
             z: -1
@@ -742,7 +767,7 @@ Item {
           }
         }
 
-        // ── 页脚：动作 + 操作 ─────────────────────────────────
+        // -- Footer: actions + controls ------------------------------
         Item {
           id: footer
           anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
@@ -755,7 +780,8 @@ Item {
           }
 
           Row {
-            // 没有文字时动作无从谈起，chips 一并收起，只留下复制/最小化/关闭
+            // With no text there is nothing to act on, so the chips fold away
+            // and only copy / collapse / close remain.
             visible: root.stage !== "empty"
 
             anchors {
@@ -814,7 +840,7 @@ Item {
             }
             spacing: 2
 
-            // 复制
+            // copy
             Rectangle {
               width: 28; height: 28; radius: 14
               color: copyHover.containsMouse
@@ -835,7 +861,7 @@ Item {
               }
             }
 
-            // 收起为胶囊
+            // collapse to the pill
             Rectangle {
               width: 28; height: 28; radius: 14
               color: minHover.containsMouse
@@ -856,7 +882,7 @@ Item {
               }
             }
 
-            // 关闭
+            // close
             Rectangle {
               width: 28; height: 28; radius: 14
               color: closeHover.containsMouse
@@ -879,7 +905,7 @@ Item {
           }
         }
 
-        // 模型名水印
+        // model name watermark
         Text {
           anchors {
             right: parent.right; rightMargin: root.bodyPadX

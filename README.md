@@ -86,10 +86,10 @@ omits `keepLoaded`.)
   "copy_ocr_to_clipboard": true,
   "ai_command": ["~/tools/bai", "-P", "river", "-p", "{pattern}"],
   "actions": [
-    { "id": "translate", "label": "翻译", "hotkey": "1", "pattern": "fanyi", "default": true },
-    { "id": "summarize", "label": "总结", "hotkey": "2", "pattern": "dcm" },
-    { "id": "explain",   "label": "解释", "hotkey": "3", "pattern": "explain_terms" },
-    { "id": "raw",       "label": "原文", "hotkey": "4", "pattern": "" }
+    { "id": "translate", "label": "Translate", "hotkey": "1", "pattern": "fanyi", "default": true },
+    { "id": "summarize", "label": "Summarize", "hotkey": "2", "pattern": "dcm" },
+    { "id": "explain",   "label": "Explain",   "hotkey": "3", "pattern": "explain_terms" },
+    { "id": "raw",       "label": "Original",  "hotkey": "4", "pattern": "" }
   ]
 }
 ```
