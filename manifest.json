@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "claw.ocr-ai",
+  "name": "OCR AI",
+  "version": "1.0.0",
+  "author": "claw",
+  "description": "Screenshot a region, read its text with OCR, and answer with AI",
+  "kinds": [
+    "overlay"
+  ],
+  "entryPoints": {
+    "overlay": "OcrAi.qml"
+  }
+}
