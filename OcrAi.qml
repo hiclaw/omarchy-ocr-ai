@@ -46,7 +46,9 @@ Item {
   property string position: "top-right"
   property string ocrLangs: "eng"
   property bool copyOcrToClipboard: true
-  property var aiCommand: ["~/tools/bai", "-P", "river", "-p", "{pattern}"]
+  // Fallbacks, used only until config.json is read (and if it cannot be read at
+  // all) -- the shipped defaults live there, not here.
+  property var aiCommand: ["your-ai-command", "{pattern}"]
   property var actions: [{ "id": "raw", "label": "Original", "hotkey": "1", "pattern": "" }]
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")

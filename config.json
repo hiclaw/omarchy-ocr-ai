@@ -2,11 +2,11 @@
   "position": "top-right",
   "ocr_langs": "eng",
   "copy_ocr_to_clipboard": true,
-  "ai_command": ["~/tools/bai", "-P", "river", "-p", "{pattern}"],
+  "ai_command": ["your-ai-command", "{pattern}"],
   "actions": [
-    { "id": "translate", "label": "Translate", "hotkey": "1", "pattern": "fanyi", "default": true },
-    { "id": "summarize", "label": "Summarize", "hotkey": "2", "pattern": "dcm" },
-    { "id": "explain", "label": "Explain", "hotkey": "3", "pattern": "explain_terms" },
+    { "id": "translate", "label": "Translate", "hotkey": "1", "pattern": "translate", "default": true },
+    { "id": "summarize", "label": "Summarize", "hotkey": "2", "pattern": "summarize" },
+    { "id": "explain", "label": "Explain", "hotkey": "3", "pattern": "explain" },
     { "id": "raw", "label": "Original", "hotkey": "4", "pattern": "" }
   ]
 }

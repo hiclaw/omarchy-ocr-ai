@@ -4,6 +4,7 @@
   "name": "OCR AI",
   "version": "1.0.0",
   "author": "claw",
+  "license": "GPL-3.0-only",
   "description": "Screenshot a region, read its text with OCR, and answer with AI",
   "kinds": [
     "overlay"
