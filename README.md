@@ -51,6 +51,12 @@ Set it in your own config — see [Configuration](#configuration).
 ## Installing
 
 ```bash
+omarchy plugin add https://github.com/hiclaw/omarchy-ocr-ai --enable
+```
+
+Or copy the folder in by hand:
+
+```bash
 cp -r claw.ocr-ai ~/.config/omarchy/plugins/
 omarchy-shell shell rescanPlugins
 omarchy plugin enable claw.ocr-ai
@@ -180,6 +186,33 @@ printf 'text to translate' | my-ai-command -p translate
 - Pressing the shortcut again while a selection is already open throws that
   selection away and starts a fresh one. Nothing can get stuck invisibly in the
   way: if a capture ever ends up in a bad state, the next press clears it.
+
+## Uninstalling
+
+Turn it off, but keep it installed:
+
+```bash
+omarchy plugin disable claw.ocr-ai
+```
+
+Or remove it:
+
+```bash
+omarchy plugin remove claw.ocr-ai
+```
+
+If you installed it with `omarchy plugin add`, that deletes the checkout — the
+code stays on GitHub, so the same command brings it back. A folder you copied in
+by hand is moved aside to
+`~/.config/omarchy/plugins/.claw.ocr-ai.bak.<timestamp>` instead, so nothing is
+lost if you change your mind.
+
+Two things removing it does **not** touch:
+
+- the binding in `~/.config/hypr/bindings.lua`. Delete those two lines yourself,
+  or the shortcut stays bound to a plugin that is no longer installed.
+- `~/.config/omarchy/ocr-ai.json`, if you created one. Delete it too if you are
+  not coming back, so a future install starts from clean defaults.
 
 ## License
 
