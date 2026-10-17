@@ -31,7 +31,6 @@ look the same.
 | `slurp` | `slurp` | region selection |
 | `grim` | `grim` | captures the region |
 | `tesseract` | `tesseract` + a language pack | OCR |
-| `wl-copy` | `wl-clipboard` | copies the recognized text |
 
 If one of these is missing, the card names it instead of failing silently.
 
@@ -183,6 +182,13 @@ printf 'text to translate' | my-ai-command -p translate
   read from the live theme and bar position — and is capped so a long answer
   scrolls inside the card instead of growing past the bottom of the screen. The
   footer with the action chips stays visible at every height.
+- Neither the recognized text nor the answer is passed on a command line: the
+  text goes to the AI command on stdin, and the clipboard is set through
+  Quickshell. Nothing about your screen shows up in `ps` or
+  `/proc/<pid>/cmdline` on this side. What the command you point `ai_command` at
+  does with the text afterwards is its own business — one that inlines the
+  request body in its own arguments (a `curl -d "$payload"` wrapper, say) hands
+  the text straight back to procfs, and nothing here can prevent that.
 - Pressing the shortcut again while a selection is already open throws that
   selection away and starts a fresh one. Nothing can get stuck invisibly in the
   way: if a capture ever ends up in a bad state, the next press clears it.

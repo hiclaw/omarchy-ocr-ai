@@ -323,7 +323,7 @@ Item {
 
   function adoptText(text, action) {
     root.sourceText = text
-    if (root.copyOcrToClipboard) Quickshell.execDetached(["wl-copy", text])
+    if (root.copyOcrToClipboard) root.copyToClipboard(text)
     // The capture phase ends here. Leave capturing first, or runAction's guard
     // (which blocks stray presses mid-drag) also blocks this legitimate first
     // run and the card never appears at all.
@@ -341,10 +341,11 @@ Item {
     return p
   }
 
-  // Text travels on stdin: no temp file, no possibly huge OCR result inside argv,
-  // and it is never parsed by a shell -- it is passed as its own argv slot and
-  // handed straight to the pipe. The command is existence-checked first, or the
-  // shell would print its own ugly "command not found" line.
+  // The recognized text is written to the AI process's stdin (see the Process
+  // below), never passed as an argument: argv is readable by anything that can
+  // open /proc, and screen text is exactly what must not show up there. The
+  // command is existence-checked first, or the shell would print its own ugly
+  // "command not found" line; exec then hands our stdin straight to it.
   function aiArgv(action) {
     var argv = []
     var tmpl = root.aiCommand || []
@@ -354,11 +355,11 @@ Item {
     argv[0] = root.expandHome(argv[0])
 
     return ["sh", "-c",
-      'exe=$1; text=$2; shift 2; '
+      'exe=$1; shift; '
         + 'command -v -- "$exe" >/dev/null 2>&1 '
         + '|| { printf "AI command not found: %s\\n" "$exe" >&2; exit 127; }; '
-        + 'printf %s "$text" | "$exe" "$@"',
-      "claw.ocr-ai", argv[0], root.sourceText].concat(argv.slice(1))
+        + 'exec "$exe" "$@"',
+      "claw.ocr-ai", argv[0]].concat(argv.slice(1))
   }
 
   function runAction(action) {
@@ -395,6 +396,7 @@ Item {
     // that gap.
     if (aiProc.running) aiProc.running = false
     aiProc.command = argv
+    aiProc.stdinEnabled = true    // the previous run closed the write channel
     aiProc.running = true
   }
 
@@ -445,6 +447,7 @@ Item {
   Process {
     id: aiProc
     running: false
+    stdinEnabled: true           // the recognized text arrives here, not on argv
 
     stdout: StdioCollector {
       id: aiOut
@@ -464,6 +467,12 @@ Item {
     }
 
     onStarted: {
+      write(root.sourceText)
+      // Closing the write channel is what tells the command "that was all of
+      // it": anything reading stdin to EOF -- cat, fabric, most CLIs -- would
+      // otherwise wait for a byte that never comes. Turning stdin off is the
+      // only way to close it; runAction turns it back on for the next run.
+      stdinEnabled = false
       root.aiLaunched = true
       aiIdleTimer.restart()
     }
@@ -493,10 +502,19 @@ Item {
 
   property bool justCopied: false
 
+  // The clipboard is set through Quickshell rather than by handing the text to a
+  // command line: an argument would be readable by anything that can open procfs,
+  // and both the recognized text and the answer are worth keeping out of there.
+  function copyToClipboard(text) {
+    var value = String(text || "")
+    if (value === "") return
+    Quickshell.clipboardText = value
+  }
+
   function copyAnswer() {
     var text = String(root.answer || "").trim()
     if (text === "") return
-    Quickshell.execDetached(["wl-copy", text])
+    root.copyToClipboard(text)
     root.justCopied = true
     copyResetTimer.restart()
   }
