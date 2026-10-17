@@ -16,6 +16,11 @@
 # Environment:
 #   OCR_LANGS   tesseract language argument, default eng (the LANGS argument wins)
 #
+# stderr is a failure channel, with one line that is not a failure: "#captured",
+# written once the picture is in hand and OCR is about to start. The caller can
+# use it to put its card up then instead of waiting out tesseract, which is the
+# longest part of the wait; any other line is a reason to show the user.
+#
 # This is a pure "screen region → text" function: it writes no clipboard, shows
 # no notification and produces no global side effect. Presentation and anything
 # that follows are entirely the caller's business.
@@ -86,6 +91,14 @@ tmp="$(mktemp "${TMPDIR:-/tmp}/claw-ocr-ai-XXXXXX.png")" \
 
 grim -g "$selection" "$tmp" 2>/dev/null \
   || { echo "Capture failed: grim could not grab the selected region" >&2; exit 1; }
+
+# The frame is in hand, so the freeze has done its job. Release it now: the
+# screen is yours again while tesseract works, instead of holding a still image
+# of it through the longest part of the wait. Then say the picture is taken, so
+# the caller can raise its card before the text exists.
+kill "$freeze_pid" 2>/dev/null
+freeze_pid=""
+echo "#captured" >&2
 
 raw="$(tesseract "$tmp" stdout --oem 1 --psm 6 -l "$langs" --dpi 300 \
         -c preserve_interword_spaces=1 2>/dev/null)" \

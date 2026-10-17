@@ -24,11 +24,23 @@ Item {
   property bool minimized: false
 
   // -- Runtime state ------------------------------------------
-  // idle -> capturing (drag and OCR) -> thinking (AI stream) -> done / error
+  // idle -> capturing (drag) -> reading (OCR) -> thinking (AI stream) -> done / error
   property string stage: "idle"
   property string sourceText: ""     // OCR result, also the AI input
   property string actionId: ""       // current action id; empty means the default one
   property string errorMessage: ""
+
+  // Text is fixed for the life of a card, so an action answered once is
+  // answered for good: switching away and back shows what we already have
+  // instead of spending another request on the same words. The cache lives and
+  // dies with the capture it belongs to.
+  property var answerCache: ({})     // action id -> the answer it produced
+  property bool showingCache: false
+  property string cachedAnswer: ""
+  property string runActionId: ""    // the action the running process belongs to
+  // The capture script's stderr, with the part that belongs to this capture
+  // starting here (a collector keeps what it has read across runs).
+  property int captureErrBase: 0
 
   // Two guards around a single AI call. The host gives us one Process, so
   // switching actions has to interrupt the previous run first, and SIGTERM is
@@ -53,6 +65,8 @@ Item {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
   readonly property string captureScript: Qt.resolvedUrl("scripts/capture-ocr.sh").toString().replace(/^file:\/\//, "")
+  // The one line the capture script writes on stderr that is not an error.
+  readonly property string captureMarker: "#captured"
 
   readonly property var defaultAction: {
     for (var i = 0; i < root.actions.length; i++)
@@ -71,12 +85,19 @@ Item {
     return !!a && String(a.pattern || "") !== ""
   }
 
-  // Card body: the raw action echoes the OCR text, everything else reads the AI stream
-  readonly property string answer: root.currentActionUsesAi
-    ? (root.awaitingFirstChunk ? "" : aiOut.text)
-    : root.sourceText
+  // Card body: the raw action echoes the OCR text, everything else reads the AI
+  // stream -- or the answer this action gave last time, when we still have it.
+  readonly property string answer: root.showingCache
+    ? root.cachedAnswer
+    : (root.currentActionUsesAi
+        ? (root.awaitingFirstChunk ? "" : aiOut.text)
+        : root.sourceText)
 
-  readonly property bool waitingForFirstChunk: root.stage === "thinking" && root.awaitingFirstChunk
+  // Nothing to show yet: OCR is still reading the picture, or the AI has not
+  // sent its first word. Either way the card says so with a spinner rather than
+  // sitting there blank.
+  readonly property bool waitingForContent: root.stage === "reading"
+    || (root.stage === "thinking" && root.awaitingFirstChunk)
 
   readonly property string modelName: {
     // Pick a name for this answer out of ai_command, purely for the card's watermark
@@ -281,28 +302,55 @@ Item {
     root.actionId = ""
     root.errorMessage = ""
     root.awaitingFirstChunk = false
+    root.forgetAnswers()
+    root.captureErrBase = String(captureErr.text || "").length
 
     captureProc.running = true
+  }
+
+  // Every answer we hold belongs to one capture: the moment a new one starts,
+  // or new text arrives, none of it is about anything on screen any more.
+  function forgetAnswers() {
+    root.answerCache = ({})
+    root.showingCache = false
+    root.cachedAnswer = ""
+    root.runActionId = ""
+  }
+
+  // The capture script says the picture is taken before it runs OCR (see the
+  // contract at the top of scripts/capture-ocr.sh). Raising the card then puts
+  // something on screen at the moment the drag ends, instead of leaving a
+  // frozen-looking pause until tesseract is done.
+  function onCaptureProgress(stderrText) {
+    if (root.stage !== "capturing") return
+    var fresh = String(stderrText || "").slice(root.captureErrBase)
+    if (fresh.indexOf(captureMarker) < 0) return
+    root.stage = "reading"
+    root.opened = true
+    root.minimized = false
   }
 
   // Only act when text really came back. Empty results are judged in onCaptureExited
   // instead: the host calls streamEnded(stdout) before streamEnded(stderr), so
   // reading stderr here would still show the previous run.
   function onCaptured(raw) {
-    if (root.stage !== "capturing") return
+    if (root.stage !== "capturing" && root.stage !== "reading") return
     var text = String(raw || "").trim()
     if (text !== "") root.adoptText(text, null)
   }
 
   function onCaptureExited(exitCode) {
-    if (root.stage !== "capturing") return   // text arrived, already on the AI path
+    if (root.stage !== "capturing" && root.stage !== "reading") return  // text arrived, already on the AI path
 
     // Three ways to end up without text, told apart by the script's exit code
     // (see the contract at the top of scripts/capture-ocr.sh):
     //   0 + no output  the drag was cancelled: leave quietly, no trace
     //   3              a region was selected but holds no text: say so softly
     //   anything else  a real failure; the reason belongs on screen
-    var err = String(captureErr.text || "").trim()
+    // The progress marker is not a failure reason, so it is dropped here, and
+    // only this capture's part of stderr is looked at.
+    var err = String(captureErr.text || "").slice(root.captureErrBase)
+      .replace(root.captureMarker, "").trim()
 
     if (exitCode === 0 && err === "") {
       root.dismiss()
@@ -330,6 +378,7 @@ Item {
     root.stage = "idle"
     root.opened = true
     root.minimized = false
+    root.forgetAnswers()   // this text has never been answered
     root.runAction(action || root.defaultAction)
   }
 
@@ -376,6 +425,23 @@ Item {
       aiIdleTimer.stop()
       root.aiLaunched = false
       root.awaitingFirstChunk = false
+      root.showingCache = false
+      root.cachedAnswer = ""
+      root.stage = "done"
+      return
+    }
+
+    // Already answered, for this very text: show what we have. Asking again
+    // would spend a request to arrive at the same words, and make switching
+    // between actions feel like waiting when there is nothing to wait for.
+    var cached = root.answerCache[action.id]
+    if (typeof cached === "string" && cached !== "") {
+      if (aiProc.running) aiProc.running = false
+      aiIdleTimer.stop()
+      root.aiLaunched = false
+      root.awaitingFirstChunk = false
+      root.cachedAnswer = cached
+      root.showingCache = true
       root.stage = "done"
       return
     }
@@ -387,6 +453,9 @@ Item {
       return
     }
 
+    root.showingCache = false
+    root.cachedAnswer = ""
+    root.runActionId = action.id
     root.stage = "thinking"
     root.aiLaunched = false
     root.awaitingFirstChunk = true
@@ -413,6 +482,11 @@ Item {
       root.errorMessage = "AI command exited with code " + exitCode
       root.stage = "error"
     } else {
+      // Keep it, so coming back to this action is instant. Only if it is this
+      // action's own answer: a run interrupted by a switch ends up here too,
+      // and its leftovers are not what the new action would have said.
+      if (root.runActionId === root.actionId && root.answer !== "")
+        root.answerCache[root.actionId] = root.answer
       root.stage = "done"
     }
   }
@@ -438,7 +512,10 @@ Item {
 
     stderr: StdioCollector {
       id: captureErr
-      waitForEnd: true
+      // Read as it comes, not only at the end: the marker arrives while
+      // tesseract is still working, which is exactly when it is useful.
+      waitForEnd: false
+      onDataChanged: root.onCaptureProgress(captureErr.text)
     }
 
     onExited: function(exitCode) { root.onCaptureExited(exitCode) }
@@ -494,6 +571,7 @@ Item {
   // -- Presentation -------------------------------------------
   readonly property string bodyText: {
     if (root.stage === "error") return root.errorMessage
+    if (root.stage === "reading") return "Reading the text…"
     if (root.stage === "empty") return "No text found"
     if (root.stage === "thinking" && root.awaitingFirstChunk) return ""
     if (root.answer === "") return root.stage === "thinking" ? "" : "(no content)"
@@ -745,7 +823,9 @@ Item {
 
           Text {
             id: bodyLabel
-            x: root.bodyPadX
+            // Slides over when the spinner is up, so the two sit side by side
+            // rather than on top of each other.
+            x: root.bodyPadX + (spinner.visible ? spinner.implicitWidth + 8 : 0)
             y: root.bodyPadTop
             width: flickable.width - root.bodyPadX * 2
             text: root.bodyText
@@ -754,13 +834,14 @@ Item {
             font.pixelSize: 15
             lineHeight: 1.25
             color: root.stage === "error" ? root.urgent
-              : (root.stage === "empty" ? root.muted : root.foreground)
+              : (root.stage === "empty" || root.stage === "reading" ? root.muted : root.foreground)
           }
 
-          // Spin until the first chunk arrives, so "waiting" is something you can see
+          // Spin while there is nothing to read yet, so "waiting" is something
+          // you can see
           Text {
             id: spinner
-            visible: root.waitingForFirstChunk
+            visible: root.waitingForContent
             x: root.bodyPadX
             y: root.bodyPadTop
             color: root.faint

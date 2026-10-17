@@ -10,12 +10,14 @@ SUPER + SHIFT + O   →   drag a region   →   the answer streams into a corner
 ## What it does
 
 1. You press the shortcut. The screen freezes and you drag a region.
-2. The region is OCR'd. The text also goes to the clipboard (unless
+2. The moment you let go, the freeze lifts and the card comes up — before the
+   text has even been read, so the wait is something you watch rather than a
+   pause with nothing to show for it.
+3. The recognized text fills the strip at the top, and an AI answer streams in
+   below it. The text also goes to the clipboard (unless
    `copy_ocr_to_clipboard` is off), so an existing "OCR to clipboard" habit
-   keeps working.
-3. A small card rises in the corner and streams an AI answer about that text.
-   The recognized text stays visible in a faint strip at the top, so you can
-   always check what the AI actually read.
+   keeps working. The strip stays visible, so you can always check what the AI
+   actually read.
 
 Nothing shows while you drag — no window, no focus change, no overlay to catch
 the screenshot. Cancel the drag and the plugin exits silently, with no error and
@@ -73,7 +75,7 @@ o.bind("SUPER + SHIFT + O", "OCR AI", "omarchy-shell shell summon claw.ocr-ai '{
 | Input | Effect |
 |---|---|
 | `Esc` / `Q` | close |
-| `1` – `9` | switch action and re-run it on the same text |
+| `1` – `9` | switch action on the same text |
 | `Space` | collapse to a pill (the answer stays visible while you work) |
 | click a chip | same as the number keys |
 | `⎘` | copy the answer (not the OCR text — that is already on the clipboard) |
@@ -182,6 +184,13 @@ printf 'text to translate' | my-ai-command -p translate
   read from the live theme and bar position — and is capped so a long answer
   scrolls inside the card instead of growing past the bottom of the screen. The
   footer with the action chips stays visible at every height.
+- The screen unfreezes the moment the region is in hand, and the card is up
+  then too: tesseract reads the picture while you already have the screen back.
+- One capture, one set of answers. An action you have already asked for shows
+  its answer again instantly — the text has not changed, so the answer cannot
+  either, and asking again would only spend a request to arrive at the same
+  words. Switching away from a run still in flight throws that run away, the
+  same way it would anywhere else.
 - Neither the recognized text nor the answer is passed on a command line: the
   text goes to the AI command on stdin, and the clipboard is set through
   Quickshell. Nothing about your screen shows up in `ps` or
