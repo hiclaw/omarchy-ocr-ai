@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "claw.ocr-ai",
   "name": "OCR AI",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "claw",
   "license": "GPL-3.0-only",
   "description": "Screenshot a region, read its text with OCR, and answer with AI",

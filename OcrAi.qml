@@ -38,9 +38,17 @@ Item {
   property bool showingCache: false
   property string cachedAnswer: ""
   property string runActionId: ""    // the action the running process belongs to
-  // The capture script's stderr, with the part that belongs to this capture
-  // starting here (a collector keeps what it has read across runs).
-  property int captureErrBase: 0
+  // The capture script's stderr as it stood when this capture started: what a
+  // collector holds can outlive the run that wrote it (see captureStderr).
+  property string captureErrBefore: ""
+
+  // What one AI run is allowed to cost. The text is read twice, once by the
+  // collector and once by the card, and both live in the shell's memory, so a
+  // command that never stops talking is not merely a long wait. Both limits sit
+  // far above any answer about a screen's worth of text: a run that reaches
+  // either one is broken, and stopping beats growing.
+  readonly property int aiMaxChars: 20000
+  readonly property int aiMaxDuration: 180000   // 3 minutes
 
   // Two guards around a single AI call. The host gives us one Process, so
   // switching actions has to interrupt the previous run first, and SIGTERM is
@@ -261,7 +269,7 @@ Item {
   function close() {
     if (captureProc.running) captureProc.running = false
     if (aiProc.running) aiProc.running = false
-    aiIdleTimer.stop()
+    root.stopWatchdogs()
     root.stage = "idle"
     root.opened = false
     root.minimized = false
@@ -293,7 +301,7 @@ Item {
     if (captureProc.running) captureProc.running = false
 
     if (aiProc.running) aiProc.running = false
-    aiIdleTimer.stop()
+    root.stopWatchdogs()
 
     root.stage = "capturing"
     root.opened = false        // keep the screen clear while the region is dragged
@@ -303,7 +311,7 @@ Item {
     root.errorMessage = ""
     root.awaitingFirstChunk = false
     root.forgetAnswers()
-    root.captureErrBase = String(captureErr.text || "").length
+    root.captureErrBefore = String(captureErr.text || "")
 
     captureProc.running = true
   }
@@ -317,14 +325,24 @@ Item {
     root.runActionId = ""
   }
 
+  // A collector's text can outlive the run that wrote it: when a run says
+  // nothing, the property still holds the previous run's words. Whatever comes
+  // after the text that was there when this capture started belongs to this
+  // capture, whether the collector replaced that text or grew it.
+  function captureStderr() {
+    var t = String(captureErr.text || "")
+    var before = root.captureErrBefore
+    if (before !== "" && t.indexOf(before) === 0) return t.slice(before.length)
+    return t
+  }
+
   // The capture script says the picture is taken before it runs OCR (see the
   // contract at the top of scripts/capture-ocr.sh). Raising the card then puts
   // something on screen at the moment the drag ends, instead of leaving a
   // frozen-looking pause until tesseract is done.
-  function onCaptureProgress(stderrText) {
+  function onCaptureProgress() {
     if (root.stage !== "capturing") return
-    var fresh = String(stderrText || "").slice(root.captureErrBase)
-    if (fresh.indexOf(captureMarker) < 0) return
+    if (root.captureStderr().indexOf(captureMarker) < 0) return
     root.stage = "reading"
     root.opened = true
     root.minimized = false
@@ -349,8 +367,7 @@ Item {
     //   anything else  a real failure; the reason belongs on screen
     // The progress marker is not a failure reason, so it is dropped here, and
     // only this capture's part of stderr is looked at.
-    var err = String(captureErr.text || "").slice(root.captureErrBase)
-      .replace(root.captureMarker, "").trim()
+    var err = root.captureStderr().replace(root.captureMarker, "").trim()
 
     if (exitCode === 0 && err === "") {
       root.dismiss()
@@ -422,7 +439,7 @@ Item {
     if (!action.pattern) {
       // the raw action: leave the AI alone
       if (aiProc.running) aiProc.running = false
-      aiIdleTimer.stop()
+      root.stopWatchdogs()
       root.aiLaunched = false
       root.awaitingFirstChunk = false
       root.showingCache = false
@@ -437,7 +454,7 @@ Item {
     var cached = root.answerCache[action.id]
     if (typeof cached === "string" && cached !== "") {
       if (aiProc.running) aiProc.running = false
-      aiIdleTimer.stop()
+      root.stopWatchdogs()
       root.aiLaunched = false
       root.awaitingFirstChunk = false
       root.cachedAnswer = cached
@@ -471,7 +488,7 @@ Item {
 
   function onAiExited(exitCode) {
     if (root.stage !== "thinking" || !root.aiLaunched) return
-    aiIdleTimer.stop()
+    root.stopWatchdogs()
     root.awaitingFirstChunk = false
 
     var err = String(aiErr.text || "").trim()
@@ -493,11 +510,28 @@ Item {
 
   function onAiStalled() {
     if (root.stage !== "thinking") return
-    root.errorMessage = root.awaitingFirstChunk
+    root.abortRun(root.awaitingFirstChunk
       ? "The AI did not respond - check that ai_command works"
-      : "The AI output stopped"
+      : "The AI output stopped")
+  }
+
+  // Give up on the run in progress, for a reason worth showing. The process goes
+  // with it: the collector keeps what a command sends until that command is
+  // gone, and a run we have given up on is exactly the kind that was going to
+  // keep sending.
+  function abortRun(message) {
+    if (root.stage !== "thinking") return
+    root.errorMessage = message
     root.stage = "error"
+    root.stopWatchdogs()
     if (aiProc.running) aiProc.running = false
+  }
+
+  // A run that is over is over for both watchdogs, so every path that ends one
+  // ends them together and no timer outlives the run it was watching.
+  function stopWatchdogs() {
+    aiIdleTimer.stop()
+    aiDeadline.stop()
   }
 
   Process {
@@ -515,7 +549,7 @@ Item {
       // Read as it comes, not only at the end: the marker arrives while
       // tesseract is still working, which is exactly when it is useful.
       waitForEnd: false
-      onDataChanged: root.onCaptureProgress(captureErr.text)
+      onDataChanged: root.onCaptureProgress()
     }
 
     onExited: function(exitCode) { root.onCaptureExited(exitCode) }
@@ -533,6 +567,15 @@ Item {
         if (root.awaitingFirstChunk) {
           root.awaitingFirstChunk = false
           aiIdleTimer.interval = 30000   // words are flowing now, be patient
+        }
+        // The answer is held twice over -- in this collector and in the text the
+        // card draws -- so an endless one is not just a long wait: it is memory
+        // the whole shell pays for. A real answer about a screen's worth of text
+        // is nowhere near this; a stream that gets here is not an answer.
+        if (aiOut.text.length > root.aiMaxChars) {
+          root.abortRun("The answer passed " + Math.round(root.aiMaxChars / 1000)
+            + "k characters - stopped")
+          return
         }
         aiIdleTimer.restart()
       }
@@ -552,6 +595,7 @@ Item {
       stdinEnabled = false
       root.aiLaunched = true
       aiIdleTimer.restart()
+      aiDeadline.restart()
     }
 
     onExited: function(exitCode) { root.onAiExited(exitCode) }
@@ -566,6 +610,17 @@ Item {
     interval: 12000
     repeat: false
     onTriggered: root.onAiStalled()
+  }
+
+  // The idle watchdog above is reset by every chunk, so it can only ever catch
+  // silence. This one is not reset by anything: a run gets aiMaxDuration and no
+  // more, however obligingly the far end keeps talking.
+  Timer {
+    id: aiDeadline
+    interval: root.aiMaxDuration
+    repeat: false
+    onTriggered: root.abortRun("The AI ran longer than "
+      + Math.round(root.aiMaxDuration / 60000) + " minutes - stopped")
   }
 
   // -- Presentation -------------------------------------------

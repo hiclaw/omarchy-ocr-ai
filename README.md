@@ -191,6 +191,13 @@ printf 'text to translate' | my-ai-command -p translate
   either, and asking again would only spend a request to arrive at the same
   words. Switching away from a run still in flight throws that run away, the
   same way it would anywhere else.
+- A run has a ceiling — 20k characters of answer, or 3 minutes, whichever comes
+  first — and the command is stopped there, with the reason in the card. The
+  answer is held twice over (the collector and the card, both in the shell's
+  memory), so a backend that never stops streaming would grow the shell until
+  memory ran out; no real answer about a screen's worth of text comes close. The
+  idle watchdog catches silence (12s, then 30s once words are flowing); the
+  deadline catches a run that keeps talking.
 - Neither the recognized text nor the answer is passed on a command line: the
   text goes to the AI command on stdin, and the clipboard is set through
   Quickshell. Nothing about your screen shows up in `ps` or
